@@ -30,39 +30,18 @@ execute:
 
 This document reproduces, end to end, the statistical analyses and figures reported in:
 
-> Wan, H., Tan, L., & Hackenberg, T. D. (2026). Behavioral economic analysis of
-> pigeons' token accumulation and reinforcer demand in a laboratory-based token
-> economy. *Journal of the Experimental Analysis of Behavior, 125*(2), e70095.
-> <https://doi.org/10.1002/jeab.70095>
+> Wan, H., Tan, L., & Hackenberg, T. D. (2026). Behavioral economic analysis of pigeons' token accumulation and reinforcer demand in a laboratory-based token economy. *Journal of the Experimental Analysis of Behavior, 125*(2), e70095. <https://doi.org/10.1002/jeab.70095>
 
-Six pigeons were exposed to a closed token economy in which responses produced
-tokens that could be accumulated and later exchanged for food. Across five
-phases, one economically relevant variable was manipulated at a time while the
-others were held constant (see @tbl-design). Two outcomes are analyzed:
+Six pigeons were exposed to a closed token economy in which responses produced tokens that could be accumulated and later exchanged for food. Across five phases, one economically relevant variable was manipulated at a time while the others were held constant (see @tbl-design). Two outcomes are analyzed:
 
-1.  **Token accumulation** — tokens per exchange period — with **binomial**
-    multilevel models (tokens out of a 60-token bank).
-2.  **Reinforcer demand** — food reinforcers earned per session — with
-    **negative binomial** multilevel models.
+1.  **Token accumulation** — tokens per exchange period — with **binomial** multilevel models (tokens out of a 60-token bank).
+2.  **Reinforcer demand** — food reinforcers earned per session — with **negative binomial** multilevel models.
 
-All models are Bayesian multilevel (hierarchical) models fit with
-[`brms`](https://paul-buerkner.github.io/brms/) via Stan. For each phase, the
-manipulated predictor is centered and scaled by its standard deviation, and
-subject-level random intercepts and slopes are estimated. Effects are summarized
-by the posterior **median** (`Estimate`), the posterior **standard deviation**
-(`Est.Error`), and the **probability of direction** (`pd`), the share of the
-posterior sharing the sign of the median (analogous to a frequentist *p* value,
-ranging from .50 to 1.0).
+All models are Bayesian multilevel (hierarchical) models fit with [`brms`](https://paul-buerkner.github.io/brms/) via Stan. For each phase, the manipulated predictor is centered and scaled by its standard deviation, and subject-level random intercepts and slopes are estimated. Effects are summarized by the posterior **median** (`Estimate`), the posterior **standard deviation** (`Est.Error`), and the **probability of direction** (`pd`), the share of the posterior sharing the sign of the median (analogous to a frequentist *p* value, ranging from .50 to 1.0).
 
 ### Data
 
-The dataset is openly available on the Open Science Framework (OSF):
-**<https://osf.io/a7523/>** (DOI [10.17605/OSF.IO/A7523](https://doi.org/10.17605/OSF.IO/A7523)).
-Download `Data_PigeonEcon.csv` and place it in the `osf/` folder of this
-repository (see the project `README`). The file is **trial-level**: one row per
-completed trial, plus a priming row (`TrialNum == 0`) at the start of each
-session. Session-level demand measures are reconstructed below from the
-per-session cumulative totals.
+The dataset is openly available on the Open Science Framework (OSF): **<https://osf.io/a7523/>** (DOI [10.17605/OSF.IO/A7523](https://doi.org/10.17605/OSF.IO/A7523)). Download `Data_PigeonEcon.csv` and place it in the `osf/` folder of this repository (see the project `README`). The file is **trial-level**: one row per completed trial, plus a priming row (`TrialNum == 0`) at the start of each session. Session-level demand measures are reconstructed below from the per-session cumulative totals.
 
 ```{r}
 #| label: setup
@@ -109,16 +88,9 @@ theme_pigeon <- function() {
 
 ## Data import and preparation
 
-The OSF export uses publication-facing names (`Pigeon`, `Phase`, `TokMag`) and
-encodes the phase in which each condition was run as a string. Two conditions
-served double duty and belong to two phases at once: the last condition of
-Phase 1 was also the first of Phase 2 (`"1 | 2"`), and the last of Phase 4 was
-the first of Phase 5 (`"4 | 5"`). Replication conditions are flagged by an `"R"`
-suffix on the pigeon ID (e.g., `126R`).
+The OSF export uses publication-facing names (`Pigeon`, `Phase`, `TokMag`) and encodes the phase in which each condition was run as a string. Two conditions served double duty and belong to two phases at once: the last condition of Phase 1 was also the first of Phase 2 (`"1 | 2"`), and the last of Phase 4 was the first of Phase 5 (`"4 | 5"`). Replication conditions are flagged by an `"R"` suffix on the pigeon ID (e.g., `126R`).
 
-Because the OSF file omits the internal session date, we recover session
-boundaries from `TrialNum`, which restarts each session: a new session begins
-wherever `TrialNum` does not increase from the previous row (within a pigeon).
+Because the OSF file omits the internal session date, we recover session boundaries from `TrialNum`, which restarts each session: a new session begins wherever `TrialNum` does not increase from the previous row (within a pigeon).
 
 ```{r}
 #| label: import
@@ -156,12 +128,7 @@ sessions <- trials |>
 in_phase <- function(df, code) map_lgl(df$phase_set, ~ code %in% .x)
 ```
 
-Each phase's model frame keeps only initial (non-replication) conditions and, for
-accumulation, drops the `TrialNum == 0` priming rows. The manipulated predictor
-is centered at a fixed reference value and scaled by its standard deviation
-*within that frame* (so the accumulation and demand versions of a predictor can
-differ, exactly as in the published analysis). Centering shifts only the
-intercept, so the reported slopes are unaffected by the choice of reference.
+Each phase's model frame keeps only initial (non-replication) conditions and, for accumulation, drops the `TrialNum == 0` priming rows. The manipulated predictor is centered at a fixed reference value and scaled by its standard deviation *within that frame* (so the accumulation and demand versions of a predictor can differ, exactly as in the published analysis). Centering shifts only the intercept, so the reported slopes are unaffected by the choice of reference.
 
 ```{r}
 #| label: model-frames
@@ -193,19 +160,12 @@ model_frame <- function(code, var, center, level = c("trial", "session")) {
 
 ## Statistical models
 
-Two thin wrappers encode the exact model specifications, priors, and sampler
-settings from the published analysis, so every phase is fit identically.
+Two thin wrappers encode the exact model specifications, priors, and sampler settings from the published analysis, so every phase is fit identically.
 
-- **Accumulation:** `binomial` with a 60-token ceiling,
-  `y | trials(60) ~ 1 + x_c + (1 + x_c | Subject)`.
-- **Demand:** `negbinomial`, `y ~ 1 + x_c + (1 + x_c | Subject)`. The dispersion
-  (`shape`) varies by subject except in Phase 4, where a single population-level
-  `shape` is estimated (matching the published models).
+- **Accumulation:** `binomial` with a 60-token ceiling, `y | trials(60) ~ 1 + x_c + (1 + x_c | Subject)`.
+- **Demand:** `negbinomial`, `y ~ 1 + x_c + (1 + x_c | Subject)`. The dispersion (`shape`) varies by subject except in Phase 4, where a single population-level `shape` is estimated (matching the published models).
 
-Priors are weakly informative Cauchy distributions
-(Gelman et al., 2008): `cauchy(0, 10)` on the intercept and `cauchy(0, 5)` on
-regression coefficients and variance components. Each model draws 4 chains of
-4,000 iterations (2,000 warmup).
+Priors are weakly informative Cauchy distributions (Gelman et al., 2008): `cauchy(0, 10)` on the intercept and `cauchy(0, 5)` on regression coefficients and variance components. Each model draws 4 chains of 4,000 iterations (2,000 warmup).
 
 ```{r}
 #| label: model-fitters
@@ -271,9 +231,7 @@ slope_summary <- function(model, label, outcome) {
 }
 ```
 
-> **Note.** The first render fits 14 Bayesian models and can take several minutes.
-> Fits are cached under `models/`; subsequent renders reuse them and complete
-> quickly. Set `file_refit = "always"` to force a full refit.
+> **Note.** The first render fits 14 Bayesian models and can take several minutes. Fits are cached under `models/`; subsequent renders reuse them and complete quickly. Set `file_refit = "always"` to force a full refit.
 
 ### Token accumulation
 
@@ -360,15 +318,7 @@ dem_summary |>
 
 ## Figures
 
-Each panel overlays the model's fitted function (posterior median with a 95%
-credible interval, from `add_epred_draws()`) on the observed per-condition means
-(±1 *SE*). Open circles connected by a line are initial exposures; open diamonds
-are replication conditions. Panels are faceted by pigeon with free *y*-axes.
-The model fits are exactly those tabulated above (the models exclude only
-replication conditions and priming rows). The published figures additionally
-used individually tuned per-pigeon axis limits and a few ad-hoc cosmetic point
-adjustments for legibility; those choices are omitted here for clarity and do
-not affect any estimate.
+Each panel overlays the model's fitted function (posterior median with a 95% credible interval, from `add_epred_draws()`) on the observed per-condition means (±1 *SE*). Open circles connected by a line are initial exposures; open diamonds are replication conditions. Panels are faceted by pigeon with free *y*-axes. The model fits are exactly those tabulated above (the models exclude only replication conditions and priming rows). The published figures additionally used individually tuned per-pigeon axis limits and a few ad-hoc cosmetic point adjustments for legibility; those choices are omitted here for clarity and do not affect any estimate.
 
 ```{r}
 #| label: figure-helpers
@@ -448,8 +398,7 @@ fig3
 
 ### Figure 4 — Token accumulation vs. free tokens and reinforcement magnitude
 
-Panel A adds *earned* tokens (filled points, dashed line = total − free); Panel B
-adds token-production *responses* per exchange (filled squares, dashed line).
+Panel A adds *earned* tokens (filled points, dashed line = total − free); Panel B adds token-production *responses* per exchange (filled squares, dashed line).
 
 ```{r}
 #| label: fig-4
@@ -519,8 +468,7 @@ fig5
 
 ### Figure 6 — Demand vs. free tokens and reinforcement magnitude
 
-Panel A adds *earned* consumption (filled points, dashed line = total food minus
-free-token food); Panel B adds token-production *responses* per session.
+Panel A adds *earned* consumption (filled points, dashed line = total food minus free-token food); Panel B adds token-production *responses* per session.
 
 ```{r}
 #| label: fig-6
@@ -585,10 +533,7 @@ tribble(
 
 ### Appendix Table A1 — Mean performance by condition
 
-Per-condition means over the final five sessions, reconstructed from the OSF
-data. Columns follow the published Appendix: mean number of trials, total
-token-production / exchange-production / token-exchange responses, food
-reinforcers earned, and the food obtained per exchange (`Acc = Rft / trials`).
+Per-condition means over the final five sessions, reconstructed from the OSF data. Columns follow the published Appendix: mean number of trials, total token-production / exchange-production / token-exchange responses, food reinforcers earned, and the food obtained per exchange (`Acc = Rft / trials`).
 
 ```{r}
 #| label: tbl-appendix
@@ -624,17 +569,3 @@ kable(appendix_A1)
 #| label: session-info
 sessionInfo()
 ```
-
-## References
-
-- Bürkner, P.-C. (2017). brms: An R package for Bayesian multilevel models using
-  Stan. *Journal of Statistical Software, 80*(1), 1–28.
-- Carpenter, B., et al. (2017). Stan: A probabilistic programming language.
-  *Journal of Statistical Software, 76*(1).
-- Gelman, A., Jakulin, A., Pittau, M. G., & Su, Y.-S. (2008). A weakly
-  informative default prior distribution for logistic and other regression
-  models. *The Annals of Applied Statistics, 2*(4), 1360–1383.
-- Wan, H., Tan, L., & Hackenberg, T. D. (2026). Behavioral economic analysis of
-  pigeons' token accumulation and reinforcer demand in a laboratory-based token
-  economy. *Journal of the Experimental Analysis of Behavior, 125*(2), e70095.
-  <https://doi.org/10.1002/jeab.70095>
