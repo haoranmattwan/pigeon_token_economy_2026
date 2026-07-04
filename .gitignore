@@ -1,0 +1,58 @@
+# ---------------------------------------------------------------------------
+# .gitignore — Pigeon token-economy reproducible analysis
+#
+# The public repository tracks only the reproducible pipeline:
+#   README.md, LICENSE, CITATION.cff, analysis.qmd, PigeonEcon.Rproj, osf/README.md
+# Everything below is kept locally (working archive) but excluded from Git.
+# ---------------------------------------------------------------------------
+
+# --- Published article (© publisher) ---------------------------------------
+Wan et al., 2026.pdf
+*.pdf
+
+# --- Data ------------------------------------------------------------------
+# Raw/original data stay local; readers obtain the dataset from OSF.
+# Track only osf/README.md (the download instructions).
+Data/
+osf/*
+!osf/README.md
+
+# --- Private manuscripts, drafts, literature, posters ----------------------
+Manuscript/
+Reed Thesis/
+SQAB/
+
+# --- Original working analysis scripts (superseded by analysis.qmd) --------
+R Code/
+
+# --- Generated outputs -----------------------------------------------------
+figures/
+models/
+*.rds
+/*.html
+/*_files/
+analysis.html
+analysis_files/
+/*_cache/
+.quarto/
+
+# --- R / RStudio -----------------------------------------------------------
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj.bak
+
+# --- OS / editor cruft -----------------------------------------------------
+.DS_Store
+._*
+Icon?
+*~
+.vscode/
+.idea/
+
+# --- Local tool settings ---------------------------------------------------
+.claude/settings.local.json
+
+# --- Backup of the previous (unrelated, corrupted) git history -------------
+.git.bak.20260704/

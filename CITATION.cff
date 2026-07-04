@@ -1,0 +1,50 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the article below."
+title: "Behavioral economic analysis of pigeons' token accumulation and reinforcer demand: reproducible analysis"
+abstract: >-
+  Reproducible R/Quarto analysis code for a study of pigeons' token
+  accumulation and food-reinforcer demand in a laboratory-based closed
+  token economy, analyzed with Bayesian multilevel binomial and negative
+  binomial models across five economically defined phases.
+type: software
+authors:
+  - family-names: Wan
+    given-names: Haoran
+    orcid: "https://orcid.org/0000-0002-3434-3146"
+    affiliation: "Washington University in St. Louis"
+  - family-names: Tan
+    given-names: Lavinia
+    affiliation: "Reed College"
+  - family-names: Hackenberg
+    given-names: Timothy D.
+    orcid: "https://orcid.org/0000-0001-5262-1886"
+    affiliation: "Reed College"
+license: MIT
+repository-artifact: "https://osf.io/a7523/"
+keywords:
+  - behavioral economics
+  - token economy
+  - token accumulation
+  - reinforcer demand
+  - conditioned reinforcement
+  - Bayesian multilevel models
+  - pigeons
+  - reproducible research
+preferred-citation:
+  type: article
+  title: "Behavioral economic analysis of pigeons' token accumulation and reinforcer demand in a laboratory-based token economy"
+  authors:
+    - family-names: Wan
+      given-names: Haoran
+      orcid: "https://orcid.org/0000-0002-3434-3146"
+    - family-names: Tan
+      given-names: Lavinia
+    - family-names: Hackenberg
+      given-names: Timothy D.
+      orcid: "https://orcid.org/0000-0001-5262-1886"
+  journal: "Journal of the Experimental Analysis of Behavior"
+  year: 2026
+  volume: 125
+  issue: 2
+  start: "e70095"
+  doi: "10.1002/jeab.70095"

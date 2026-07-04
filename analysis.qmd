@@ -1,0 +1,640 @@
+---
+title: "Behavioral Economic Analysis of Pigeons' Token Accumulation and Reinforcer Demand"
+subtitle: "Reproducible analysis for Wan, Tan, & Hackenberg (2026), *Journal of the Experimental Analysis of Behavior*"
+author:
+  - name: "Haoran Wan"
+    orcid: "0000-0002-3434-3146"
+  - name: "Lavinia Tan"
+  - name: "Timothy D. Hackenberg"
+    orcid: "0000-0001-5262-1886"
+date: last-modified
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: false
+    code-tools: true
+    embed-resources: true
+    fig-width: 7.5
+    fig-dpi: 200
+execute:
+  warning: false
+  message: false
+  echo: true
+  cache: false
+---
+
+## Overview
+
+This document reproduces, end to end, the statistical analyses and figures reported in:
+
+> Wan, H., Tan, L., & Hackenberg, T. D. (2026). Behavioral economic analysis of
+> pigeons' token accumulation and reinforcer demand in a laboratory-based token
+> economy. *Journal of the Experimental Analysis of Behavior, 125*(2), e70095.
+> <https://doi.org/10.1002/jeab.70095>
+
+Six pigeons were exposed to a closed token economy in which responses produced
+tokens that could be accumulated and later exchanged for food. Across five
+phases, one economically relevant variable was manipulated at a time while the
+others were held constant (see @tbl-design). Two outcomes are analyzed:
+
+1.  **Token accumulation** — tokens per exchange period — with **binomial**
+    multilevel models (tokens out of a 60-token bank).
+2.  **Reinforcer demand** — food reinforcers earned per session — with
+    **negative binomial** multilevel models.
+
+All models are Bayesian multilevel (hierarchical) models fit with
+[`brms`](https://paul-buerkner.github.io/brms/) via Stan. For each phase, the
+manipulated predictor is centered and scaled by its standard deviation, and
+subject-level random intercepts and slopes are estimated. Effects are summarized
+by the posterior **median** (`Estimate`), the posterior **standard deviation**
+(`Est.Error`), and the **probability of direction** (`pd`), the share of the
+posterior sharing the sign of the median (analogous to a frequentist *p* value,
+ranging from .50 to 1.0).
+
+### Data
+
+The dataset is openly available on the Open Science Framework (OSF):
+**<https://osf.io/a7523/>** (DOI [10.17605/OSF.IO/A7523](https://doi.org/10.17605/OSF.IO/A7523)).
+Download `Data_PigeonEcon.csv` and place it in the `osf/` folder of this
+repository (see the project `README`). The file is **trial-level**: one row per
+completed trial, plus a priming row (`TrialNum == 0`) at the start of each
+session. Session-level demand measures are reconstructed below from the
+per-session cumulative totals.
+
+```{r}
+#| label: setup
+#| results: hide
+
+## ---- Packages -------------------------------------------------------------
+library(tidyverse)   # data wrangling + ggplot2
+library(here)        # project-relative paths
+library(brms)        # Bayesian multilevel models
+library(tidybayes)   # posterior tidying (gather_draws, add_epred_draws, median_qi)
+library(patchwork)   # combine ggplot panels
+library(knitr)       # tables
+
+## ---- Reproducibility ------------------------------------------------------
+SEED <- 2026
+set.seed(SEED)
+options(mc.cores = parallel::detectCores())
+
+## Use cmdstanr if available (as in the published analysis); else fall back.
+BACKEND <- if (requireNamespace("cmdstanr", quietly = TRUE)) "cmdstanr" else "rstan"
+
+## Cache compiled model fits here so re-rendering is fast. Refit only when the
+## model or data change (this also avoids stale cached fits).
+dir.create(here("models"),  showWarnings = FALSE)
+dir.create(here("figures"), showWarnings = FALSE)
+
+## Shared plotting aesthetics -------------------------------------------------
+col_acc <- "#C0392B"   # red  — token accumulation
+col_dem <- "#4C72B0"   # blue — reinforcer demand
+
+theme_pigeon <- function() {
+  theme_bw(base_size = 12) +
+    theme(
+      panel.grid      = element_blank(),
+      panel.border    = element_rect(colour = "black", linewidth = 0.8),
+      strip.background = element_blank(),
+      strip.text      = element_text(face = "bold"),
+      axis.title      = element_text(face = "bold"),
+      axis.ticks.length = unit(-0.12, "cm"),
+      plot.title      = element_text(face = "bold", hjust = 0.5)
+    )
+}
+```
+
+## Data import and preparation
+
+The OSF export uses publication-facing names (`Pigeon`, `Phase`, `TokMag`) and
+encodes the phase in which each condition was run as a string. Two conditions
+served double duty and belong to two phases at once: the last condition of
+Phase 1 was also the first of Phase 2 (`"1 | 2"`), and the last of Phase 4 was
+the first of Phase 5 (`"4 | 5"`). Replication conditions are flagged by an `"R"`
+suffix on the pigeon ID (e.g., `126R`).
+
+Because the OSF file omits the internal session date, we recover session
+boundaries from `TrialNum`, which restarts each session: a new session begins
+wherever `TrialNum` does not increase from the previous row (within a pigeon).
+
+```{r}
+#| label: import
+
+data_path <- here("osf", "Data_PigeonEcon.csv")
+
+if (!file.exists(data_path)) {
+  stop("Data_PigeonEcon.csv not found in osf/.\n",
+       "Download it from OSF (https://osf.io/a7523/) and place it in the osf/ folder.")
+}
+
+raw <- read_csv(data_path, show_col_types = FALSE)
+
+trials <- raw |>
+  mutate(
+    Replication = if_else(str_detect(Pigeon, "R$"), 1L, 0L),
+    Subject     = factor(str_remove(Pigeon, "R$")),
+    Wage        = TokMag,                        # economic analogue: wage
+    phase_set   = str_split(Phase, "\\s*\\|\\s*") # e.g., "1 | 2" -> c("1","2")
+  ) |>
+  group_by(Pigeon) |>
+  mutate(Session = cumsum(replace_na(TrialNum <= lag(TrialNum), TRUE))) |>
+  ungroup() |>
+  mutate(SessionID = paste(Pigeon, Session, sep = "-"))
+
+## Session-level frame for demand: the last row of each session carries that
+## session's cumulative totals (TotalRft, TotTokProdResp), and its TrialNum is
+## the number of completed trials that session.
+sessions <- trials |>
+  group_by(SessionID) |>
+  slice_max(TrialNum, n = 1, with_ties = FALSE) |>
+  ungroup()
+
+## Helper: does a row's phase set contain a given phase code?
+in_phase <- function(df, code) map_lgl(df$phase_set, ~ code %in% .x)
+```
+
+Each phase's model frame keeps only initial (non-replication) conditions and, for
+accumulation, drops the `TrialNum == 0` priming rows. The manipulated predictor
+is centered at a fixed reference value and scaled by its standard deviation
+*within that frame* (so the accumulation and demand versions of a predictor can
+differ, exactly as in the published analysis). Centering shifts only the
+intercept, so the reported slopes are unaffected by the choice of reference.
+
+```{r}
+#| label: model-frames
+
+## Reference (centering) values and economic labels for each phase.
+phase_info <- tribble(
+  ~phase, ~var,          ~center, ~economic,                     ~xlab,
+  "1",    "TokProdFR",   5,       "Labor / wage (inverse)",      "Token-Production Ratio",
+  "2",    "ExchProdFR",  100,     "Transaction cost",            "Exchange-Production Ratio",
+  "3",    "Price",       2,       "Price",                       "Token-Exchange Price",
+  "4",    "FreeToken",   5,       "Nonlabor income",             "Number of Free Tokens",
+  "5",    "Wage",        5,       "Wage (reinforcer magnitude)", "Token-Reinforcement Magnitude"
+)
+
+## Build a standardized model frame for one phase.
+##   level = "trial"   -> accumulation (trial-level, drop priming rows)
+##   level = "session" -> demand (session-level)
+model_frame <- function(code, var, center, level = c("trial", "session")) {
+  level <- match.arg(level)
+  base  <- if (level == "trial") trials else sessions
+  out <- base |>
+    filter(in_phase(base, code), Replication == 0)
+  if (level == "trial") out <- filter(out, TrialNum != 0)
+  out |>
+    mutate("{var}_c" := (.data[[var]] - center) / sd(.data[[var]])) |>
+    select(-phase_set)
+}
+```
+
+## Statistical models
+
+Two thin wrappers encode the exact model specifications, priors, and sampler
+settings from the published analysis, so every phase is fit identically.
+
+- **Accumulation:** `binomial` with a 60-token ceiling,
+  `y | trials(60) ~ 1 + x_c + (1 + x_c | Subject)`.
+- **Demand:** `negbinomial`, `y ~ 1 + x_c + (1 + x_c | Subject)`. The dispersion
+  (`shape`) varies by subject except in Phase 4, where a single population-level
+  `shape` is estimated (matching the published models).
+
+Priors are weakly informative Cauchy distributions
+(Gelman et al., 2008): `cauchy(0, 10)` on the intercept and `cauchy(0, 5)` on
+regression coefficients and variance components. Each model draws 4 chains of
+4,000 iterations (2,000 warmup).
+
+```{r}
+#| label: model-fitters
+
+## Binomial accumulation model (tokens out of 60).
+fit_acc <- function(df, var, outcome = "TokAcc", name) {
+  form <- bf(as.formula(sprintf(
+    "%s | trials(60) ~ 1 + %s_c + (1 + %s_c | Subject)", outcome, var, var)))
+  brm(
+    form, data = df, family = binomial(),
+    prior = c(prior(cauchy(0, 10), class = Intercept),
+              prior(cauchy(0,  5), class = b),
+              prior(cauchy(0,  5), class = sd)),
+    iter = 4000, warmup = 2000, chains = 4, seed = SEED,
+    backend = BACKEND, refresh = 0,
+    control = list(adapt_delta = 0.95, max_treedepth = 15),
+    file = here("models", name), file_refit = "on_change"
+  )
+}
+
+## Negative-binomial demand model. shape_by_subject = FALSE reproduces the
+## Phase 4 specification (single population-level dispersion).
+fit_dem <- function(df, var, outcome = "TotalRft", name, shape_by_subject = TRUE) {
+  main <- sprintf("%s ~ 1 + %s_c + (1 + %s_c | Subject)", outcome, var, var)
+  if (shape_by_subject) {
+    form  <- bf(as.formula(main), shape ~ 1 + (1 | Subject))
+    prior <- c(prior(cauchy(0, 10), class = Intercept),
+               prior(cauchy(0,  5), class = b),
+               prior(cauchy(0,  5), class = sd),
+               prior(cauchy(0,  5), class = Intercept, dpar = shape),
+               prior(cauchy(0,  5), class = sd,        dpar = shape))
+  } else {
+    form  <- bf(as.formula(main))
+    prior <- c(prior(cauchy(0, 10), class = Intercept),
+               prior(cauchy(0,  5), class = b),
+               prior(cauchy(0,  5), class = sd),
+               prior(cauchy(0,  5), class = shape))
+  }
+  brm(
+    form, data = df, family = negbinomial(),
+    prior = prior,
+    iter = 4000, warmup = 2000, chains = 4, seed = SEED,
+    backend = BACKEND, refresh = 0,
+    control = list(adapt_delta = 0.99, max_treedepth = 15),
+    file = here("models", name), file_refit = "on_change"
+  )
+}
+
+## Tidy the population-level slope of a fitted model into one summary row:
+## posterior median, SD, and probability of direction. The slope is the single
+## population-level coefficient whose name ends in "_c" (b_<var>_c).
+slope_summary <- function(model, label, outcome) {
+  dd    <- as_draws_df(model)
+  term  <- grep("^b_.*_c$", names(dd), value = TRUE)[1]
+  draws <- dd[[term]]
+  tibble(
+    Effect    = label,
+    Outcome   = outcome,
+    Estimate  = median(draws),
+    Est.Error = sd(draws),
+    pd        = max(mean(draws > 0), mean(draws < 0))
+  )
+}
+```
+
+> **Note.** The first render fits 14 Bayesian models and can take several minutes.
+> Fits are cached under `models/`; subsequent renders reuse them and complete
+> quickly. Set `file_refit = "always"` to force a full refit.
+
+### Token accumulation
+
+```{r}
+#| label: fit-accumulation
+
+## One standardized frame per phase (trial level).
+af <- pmap(phase_info, function(phase, var, center, ...)
+  model_frame(phase, var, center, level = "trial")) |>
+  set_names(phase_info$phase)
+
+acc1  <- fit_acc(af[["1"]], "TokProdFR",  name = "acc_p1_tokprod")
+acc2  <- fit_acc(af[["2"]], "ExchProdFR", name = "acc_p2_exchprod")
+acc3  <- fit_acc(af[["3"]], "Price",      name = "acc_p3_price")
+acc4  <- fit_acc(af[["4"]], "FreeToken",  name = "acc_p4_freetok")            # total tokens
+acc4A <- fit_acc(af[["4"]], "FreeToken",  outcome = "TokProdResp",
+                 name = "acc_p4_freetok_earned")                              # earned tokens
+acc5  <- fit_acc(af[["5"]], "Wage",       name = "acc_p5_wage")              # total tokens
+acc5A <- fit_acc(af[["5"]], "Wage",       outcome = "TokProdResp",
+                 name = "acc_p5_wage_resp")                                   # token-production responses
+```
+
+```{r}
+#| label: tbl-accumulation
+#| tbl-cap: "Token accumulation: population-level effects (posterior median, SD, and probability of direction) of each manipulated variable on tokens per exchange."
+
+acc_summary <- bind_rows(
+  slope_summary(acc1,  "Phase 1 · Token-production ratio",   "Tokens/exchange"),
+  slope_summary(acc2,  "Phase 2 · Exchange-production ratio", "Tokens/exchange"),
+  slope_summary(acc3,  "Phase 3 · Token-exchange price",      "Tokens/exchange"),
+  slope_summary(acc4,  "Phase 4 · Free tokens",               "Total tokens/exchange"),
+  slope_summary(acc4A, "Phase 4 · Free tokens",               "Earned tokens/exchange"),
+  slope_summary(acc5,  "Phase 5 · Reinforcement magnitude",   "Total tokens/exchange"),
+  slope_summary(acc5A, "Phase 5 · Reinforcement magnitude",   "Token-production responses")
+)
+
+acc_summary |>
+  mutate(across(c(Estimate, Est.Error, pd), \(x) round(x, 3))) |>
+  select(Effect, Outcome, Estimate, Est.Error, pd) |>
+  kable(align = "llrrr")
+```
+
+### Reinforcer demand
+
+```{r}
+#| label: fit-demand
+
+## One standardized frame per phase (session level).
+sf <- pmap(phase_info, function(phase, var, center, ...)
+  model_frame(phase, var, center, level = "session")) |>
+  set_names(phase_info$phase)
+
+dem1  <- fit_dem(sf[["1"]], "TokProdFR",  name = "dem_p1_tokprod")
+dem2  <- fit_dem(sf[["2"]], "ExchProdFR", name = "dem_p2_exchprod")
+dem3  <- fit_dem(sf[["3"]], "Price",      name = "dem_p3_price")
+dem4  <- fit_dem(sf[["4"]], "FreeToken",  name = "dem_p4_freetok",
+                 shape_by_subject = FALSE)                                   # total consumption
+dem4A <- fit_dem(sf[["4"]], "FreeToken",  outcome = "TotTokProdResp",
+                 name = "dem_p4_freetok_earned", shape_by_subject = FALSE)   # earned consumption
+dem5  <- fit_dem(sf[["5"]], "Wage",       name = "dem_p5_wage")             # consumption
+dem5A <- fit_dem(sf[["5"]], "Wage",       outcome = "TotTokProdResp",
+                 name = "dem_p5_wage_resp")                                  # token-production responses
+```
+
+```{r}
+#| label: tbl-demand
+#| tbl-cap: "Reinforcer demand: population-level effects (posterior median, SD, and probability of direction) of each manipulated variable on food reinforcers earned per session."
+
+dem_summary <- bind_rows(
+  slope_summary(dem1,  "Phase 1 · Token-production ratio",    "Consumption"),
+  slope_summary(dem2,  "Phase 2 · Exchange-production ratio", "Consumption"),
+  slope_summary(dem3,  "Phase 3 · Token-exchange price",      "Consumption"),
+  slope_summary(dem4,  "Phase 4 · Free tokens",               "Total consumption"),
+  slope_summary(dem4A, "Phase 4 · Free tokens",               "Earned consumption"),
+  slope_summary(dem5,  "Phase 5 · Reinforcement magnitude",   "Consumption"),
+  slope_summary(dem5A, "Phase 5 · Reinforcement magnitude",   "Token-production responses")
+)
+
+dem_summary |>
+  mutate(across(c(Estimate, Est.Error, pd), \(x) round(x, 3))) |>
+  select(Effect, Outcome, Estimate, Est.Error, pd) |>
+  kable(align = "llrrr")
+```
+
+## Figures
+
+Each panel overlays the model's fitted function (posterior median with a 95%
+credible interval, from `add_epred_draws()`) on the observed per-condition means
+(±1 *SE*). Open circles connected by a line are initial exposures; open diamonds
+are replication conditions. Panels are faceted by pigeon with free *y*-axes.
+The model fits are exactly those tabulated above (the models exclude only
+replication conditions and priming rows). The published figures additionally
+used individually tuned per-pigeon axis limits and a few ad-hoc cosmetic point
+adjustments for legibility; those choices are omitted here for clarity and do
+not affect any estimate.
+
+```{r}
+#| label: figure-helpers
+
+## Posterior fitted curve for one model, back-transformed to the raw predictor.
+epred_curve <- function(model, df, var, center) {
+  vc <- paste0(var, "_c")
+  s  <- sd(df[[var]])
+  grid <- expand_grid(
+    Subject = unique(df$Subject),
+    xc      = seq(min(df[[vc]]), max(df[[vc]]), by = 0.05)
+  )
+  grid[[vc]] <- grid$xc                 # predictor on the model's centered/scaled scale
+  grid$x     <- grid$xc * s + center    # same predictor on the raw scale (for plotting)
+  grid |>
+    add_epred_draws(model) |>
+    group_by(Subject, x) |>
+    median_qi(.epred, .width = 0.95) |>
+    ungroup()
+}
+
+## Observed per-condition summary (mean ± SE) for a phase and outcome.
+obs_summary <- function(df, code, var, yvar) {
+  df |>
+    filter(in_phase(df, code)) |>
+    group_by(Subject, Replication, x = .data[[var]]) |>
+    summarise(mean = mean(.data[[yvar]]),
+              se   = sd(.data[[yvar]]) / sqrt(n()), .groups = "drop")
+}
+
+## Standard panel: fitted ribbon + observed means (initial line/points, replication diamonds).
+panel_plot <- function(curve, obs, xbreaks, xlab, ylab, colour) {
+  init <- filter(obs, Replication == 0)
+  rep  <- filter(obs, Replication == 1)
+  p <- ggplot() +
+    geom_ribbon(data = curve, aes(x, .epred, ymin = .lower, ymax = .upper),
+                fill = colour, alpha = 0.25) +
+    geom_line(data = init, aes(x, mean), colour = colour, linewidth = 0.8) +
+    geom_errorbar(data = init, aes(x, ymin = mean - se, ymax = mean + se),
+                  width = 0, colour = colour, linewidth = 0.8) +
+    geom_point(data = init, aes(x, mean), shape = 21, fill = "white",
+               colour = colour, size = 2.8, stroke = 1.1)
+  if (nrow(rep) > 0)
+    p <- p + geom_point(data = rep, aes(x, mean), shape = 23, fill = "white",
+                        colour = "gray30", size = 2.6, stroke = 1)
+  p +
+    facet_wrap(~Subject, ncol = 3, scales = "free_y") +
+    scale_x_continuous(breaks = xbreaks) +
+    labs(x = xlab, y = ylab) +
+    theme_pigeon()
+}
+```
+
+### Figure 3 — Token accumulation vs. token-production ratio, exchange-production ratio, and price
+
+```{r}
+#| label: fig-3
+#| fig-cap: "Mean tokens per exchange as a function of the token-production ratio (top), exchange-production ratio (middle), and token-exchange price (bottom) for each pigeon."
+#| fig-width: 7.5
+#| fig-height: 12
+
+f3a <- panel_plot(epred_curve(acc1, af[["1"]], "TokProdFR", 5),
+                  obs_summary(trials |> filter(TrialNum != 0), "1", "TokProdFR", "TokAcc"),
+                  c(1, 5, 10), "Token-Production Ratio", "Mean Tokens per Exchange", col_acc)
+f3b <- panel_plot(epred_curve(acc2, af[["2"]], "ExchProdFR", 100),
+                  obs_summary(trials |> filter(TrialNum != 0), "2", "ExchProdFR", "TokAcc"),
+                  c(25, 50, 100, 200), "Exchange-Production Ratio", "Mean Tokens per Exchange", col_acc)
+f3c <- panel_plot(epred_curve(acc3, af[["3"]], "Price", 2),
+                  obs_summary(trials |> filter(TrialNum != 0), "3", "Price", "TokAcc"),
+                  c(1, 2, 5), "Token-Exchange Price", "Mean Tokens per Exchange", col_acc)
+
+fig3 <- f3a / f3b / f3c
+ggsave(here("figures", "Figure 3.jpg"), fig3, width = 180, height = 360,
+       units = "mm", dpi = 300)
+fig3
+```
+
+### Figure 4 — Token accumulation vs. free tokens and reinforcement magnitude
+
+Panel A adds *earned* tokens (filled points, dashed line = total − free); Panel B
+adds token-production *responses* per exchange (filled squares, dashed line).
+
+```{r}
+#| label: fig-4
+#| fig-cap: "Mean tokens per exchange as a function of the number of free tokens (top) and token-reinforcement magnitude (bottom) for each pigeon."
+#| fig-width: 7.5
+#| fig-height: 8.5
+
+## Panel A — free tokens: total (ribbon + open circles) and earned (filled, dashed).
+earned_tok <- trials |>
+  filter(in_phase(trials, "4"), TrialNum != 0, Replication == 0) |>
+  group_by(Subject, x = FreeToken) |>
+  summarise(earned = mean(TokAcc) - unique(FreeToken), .groups = "drop") |>
+  mutate(earned = if_else(x == 0, NA_real_, earned))
+
+f4a <- panel_plot(epred_curve(acc4, af[["4"]], "FreeToken", 5),
+                  obs_summary(trials |> filter(TrialNum != 0), "4", "FreeToken", "TokAcc"),
+                  c(0, 2, 5, 10), "Number of Free Tokens", "Mean Tokens per Exchange", col_acc) +
+  geom_line(data = earned_tok, aes(x, earned), colour = col_acc,
+            linewidth = 0.5, linetype = 2, na.rm = TRUE) +
+  geom_point(data = earned_tok, aes(x, earned), colour = col_acc, fill = col_acc,
+             shape = 21, size = 2.3, na.rm = TRUE)
+
+## Panel B — magnitude: total tokens (ribbon + open circles) and token-production responses.
+resp_tok <- trials |>
+  filter(in_phase(trials, "5"), TrialNum != 0, Replication == 0) |>
+  group_by(Subject, x = Wage) |>
+  summarise(resp = mean(TokProdResp), .groups = "drop") |>
+  mutate(resp = if_else(x == 1, NA_real_, resp))
+
+f4b <- panel_plot(epred_curve(acc5, af[["5"]], "Wage", 5),
+                  obs_summary(trials |> filter(TrialNum != 0), "5", "Wage", "TokAcc"),
+                  c(1, 2, 5, 10), "Token-Reinforcement Magnitude", "Mean Tokens per Exchange", col_acc) +
+  geom_line(data = resp_tok, aes(x, resp), colour = col_acc,
+            linewidth = 0.5, linetype = 2, na.rm = TRUE) +
+  geom_point(data = resp_tok, aes(x, resp), colour = col_acc, fill = col_acc,
+             shape = 22, size = 2.3, na.rm = TRUE)
+
+fig4 <- f4a / f4b
+ggsave(here("figures", "Figure 4.jpg"), fig4, width = 180, height = 245,
+       units = "mm", dpi = 300)
+fig4
+```
+
+### Figure 5 — Demand vs. token-production ratio, exchange-production ratio, and price
+
+```{r}
+#| label: fig-5
+#| fig-cap: "Total food reinforcers earned as a function of the token-production ratio (top), exchange-production ratio (middle), and token-exchange price (bottom) for each pigeon."
+#| fig-width: 7.5
+#| fig-height: 12
+
+f5a <- panel_plot(epred_curve(dem1, sf[["1"]], "TokProdFR", 5),
+                  obs_summary(sessions, "1", "TokProdFR", "TotalRft"),
+                  c(1, 5, 10), "Token-Production Ratio", "Mean Food Consumption", col_dem)
+f5b <- panel_plot(epred_curve(dem2, sf[["2"]], "ExchProdFR", 100),
+                  obs_summary(sessions, "2", "ExchProdFR", "TotalRft"),
+                  c(25, 50, 100, 200), "Exchange-Production Ratio", "Mean Food Consumption", col_dem)
+f5c <- panel_plot(epred_curve(dem3, sf[["3"]], "Price", 2),
+                  obs_summary(sessions, "3", "Price", "TotalRft"),
+                  c(1, 2, 5), "Token-Exchange Price", "Mean Food Consumption", col_dem)
+
+fig5 <- f5a / f5b / f5c
+ggsave(here("figures", "Figure 5.jpg"), fig5, width = 180, height = 375,
+       units = "mm", dpi = 300)
+fig5
+```
+
+### Figure 6 — Demand vs. free tokens and reinforcement magnitude
+
+Panel A adds *earned* consumption (filled points, dashed line = total food minus
+free-token food); Panel B adds token-production *responses* per session.
+
+```{r}
+#| label: fig-6
+#| fig-cap: "Total food reinforcers earned as a function of the number of free tokens (top) and token-reinforcement magnitude (bottom) for each pigeon."
+#| fig-width: 7.5
+#| fig-height: 8.5
+
+## Panel A — free tokens: total (ribbon + open circles) and earned consumption.
+earned_con <- sessions |>
+  filter(in_phase(sessions, "4"), Replication == 0) |>
+  group_by(Subject, x = FreeToken) |>
+  summarise(earned = mean(TotalRft - TrialNum * FreeToken), .groups = "drop") |>
+  mutate(earned = if_else(x == 0, NA_real_, earned))
+
+f6a <- panel_plot(epred_curve(dem4, sf[["4"]], "FreeToken", 5),
+                  obs_summary(sessions, "4", "FreeToken", "TotalRft"),
+                  c(0, 2, 5, 10), "Number of Free Tokens", "Mean Food Consumption", col_dem) +
+  geom_line(data = earned_con, aes(x, earned), colour = col_dem,
+            linewidth = 0.5, linetype = 2, na.rm = TRUE) +
+  geom_point(data = earned_con, aes(x, earned), colour = col_dem, fill = col_dem,
+             shape = 21, size = 2.3, na.rm = TRUE)
+
+## Panel B — magnitude: consumption (ribbon + open circles) and token-production responses.
+resp_con <- sessions |>
+  filter(in_phase(sessions, "5"), Replication == 0) |>
+  group_by(Subject, x = Wage) |>
+  summarise(resp = mean(TotTokProdResp), .groups = "drop") |>
+  mutate(resp = if_else(x == 1, NA_real_, resp))
+
+f6b <- panel_plot(epred_curve(dem5, sf[["5"]], "Wage", 5),
+                  obs_summary(sessions, "5", "Wage", "TotalRft"),
+                  c(1, 2, 5, 10), "Token-Reinforcement Magnitude", "Mean Food Consumption", col_dem) +
+  geom_line(data = resp_con, aes(x, resp), colour = col_dem,
+            linewidth = 0.5, linetype = 2, na.rm = TRUE) +
+  geom_point(data = resp_con, aes(x, resp), colour = col_dem, fill = col_dem,
+             shape = 22, size = 2.3, na.rm = TRUE)
+
+fig6 <- f6a / f6b
+ggsave(here("figures", "Figure 6.jpg"), fig6, width = 180, height = 255,
+       units = "mm", dpi = 300)
+fig6
+```
+
+## Tables
+
+### Table 1 — Experimental variables and their economic analogues
+
+```{r}
+#| label: tbl-design
+#| tbl-cap: "Key experimental terms, their economic analogues, and definitions."
+
+tribble(
+  ~`Experimental term`,            ~`Economic analogy`,          ~`Definition in this study`,
+  "Token-production ratio",        "Labor / wage (inverse)",     "Responses (pecks) required to earn one token.",
+  "Exchange-production ratio",     "Transaction cost",           "Responses (pecks) required to initiate an exchange period.",
+  "Token-exchange price",          "Price / purchase cost",      "Tokens required to exchange for one unit of food.",
+  "Free tokens",                   "Nonlabor income / subsidy",  "Unearned tokens provided at the start of each trial.",
+  "Token-reinforcement magnitude", "Wage",                       "Tokens earned for completing one token-production requirement."
+) |>
+  kable()
+```
+
+### Appendix Table A1 — Mean performance by condition
+
+Per-condition means over the final five sessions, reconstructed from the OSF
+data. Columns follow the published Appendix: mean number of trials, total
+token-production / exchange-production / token-exchange responses, food
+reinforcers earned, and the food obtained per exchange (`Acc = Rft / trials`).
+
+```{r}
+#| label: tbl-appendix
+#| tbl-cap: "Reconstructed Appendix Table A1: mean performance measures by pigeon and condition."
+
+## Session-level totals per condition (includes replication conditions, tagged "R").
+per_session <- sessions |>
+  transmute(
+    Pigeon, Phase, TokProdFR, ExchProdFR, TEPrice = Price, Free = FreeToken,
+    TokMag, TrialNum,
+    TPResp = TotTokProdResp, EPResp = TotExchProdResp, TEResp = TotTokExchResp,
+    Rft = TotalRft
+  )
+
+appendix_A1 <- per_session |>
+  group_by(Pigeon, Phase, TPFR = TokProdFR, EPFR = ExchProdFR,
+           TEPrice, Free, TokMag) |>
+  summarise(
+    TrialNum = mean(TrialNum), TPResp = mean(TPResp), EPResp = mean(EPResp),
+    TEResp = mean(TEResp), Rft = mean(Rft), .groups = "drop"
+  ) |>
+  mutate(Acc = Rft / TrialNum) |>
+  arrange(Pigeon, Phase) |>
+  mutate(across(where(is.numeric), \(x) round(x, 1)))
+
+write_csv(appendix_A1, here("figures", "Appendix_Table_A1.csv"))
+kable(appendix_A1)
+```
+
+## Reproducibility
+
+```{r}
+#| label: session-info
+sessionInfo()
+```
+
+## References
+
+- Bürkner, P.-C. (2017). brms: An R package for Bayesian multilevel models using
+  Stan. *Journal of Statistical Software, 80*(1), 1–28.
+- Carpenter, B., et al. (2017). Stan: A probabilistic programming language.
+  *Journal of Statistical Software, 76*(1).
+- Gelman, A., Jakulin, A., Pittau, M. G., & Su, Y.-S. (2008). A weakly
+  informative default prior distribution for logistic and other regression
+  models. *The Annals of Applied Statistics, 2*(4), 1360–1383.
+- Wan, H., Tan, L., & Hackenberg, T. D. (2026). Behavioral economic analysis of
+  pigeons' token accumulation and reinforcer demand in a laboratory-based token
+  economy. *Journal of the Experimental Analysis of Behavior, 125*(2), e70095.
+  <https://doi.org/10.1002/jeab.70095>
