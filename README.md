@@ -103,5 +103,5 @@ Code in this repository is released under the [MIT License](LICENSE). The datase
 
 ## Contact
 
-**Haoran Wan** — <haoran.matt.wan@outlook.com> ·
+**Haoran Wan** — <haoran.wan@dukekunshan.edu.cn> ·
 ORCID [0000-0002-3434-3146](https://orcid.org/0000-0002-3434-3146)
